@@ -1,0 +1,1132 @@
+---
+title: 'Boxcox Stim: Figures for the paper (original SI)'
+author: "Gabrielle Boucher"
+date: "2025-03-14"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: united
+    number_sections: true
+    toc_float: true
+    code_folding: "hide"
+---
+
+
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = FALSE,fig.dim=c(6,6), position = "center", fig.align = 'center')
+library(kableExtra)
+#library(DT) # for interactive tables
+library(readxl)  ## install.packages("tidyverse")
+library(openxlsx)
+options(stringsAsFactors=FALSE)
+library(MASS)
+library(psych)
+library(lme4) # package for mixed models
+
+windowsFonts(Arial1 ="Arial")
+
+Width1 = 4
+height1 = 4
+dateOut <- "20250314"
+```
+
+
+
+```{r}
+
+# boxcox function (I added a default value of 0.5)
+bc <- function(x,l=0.5){if(l==0) return(log(x)) else return((x^l-1)/l)}
+# inverse boxcox function
+ibc <- function(x,l=0.5){if(l==0) return(exp(x)) else return((x*l+1)^(1/l))}
+
+# to be noted; the box-cox is an estimation of log as lambda ->0, for values around 1
+# unlike log, it can be computed for 0 (when lambda +0)
+# most definition exclude x=0 because of the log case 
+
+# for x=0 values, the box-cox will give: -1/lambda
+# this is somehow equivalent to replacing 0s with exp(-1/lambda) in a log transformation
+# eg at lambda = 0.5,  this is equivalent to replacing 0s with 0.14
+# at lambda = 0.2, this is equivalent to replace 0s with 0.007
+
+# One can do BOTH, ie you can add an epsilon before computing the box cox
+
+# at lambda =1, boxcox is a linear transformation. We then have bc(x1,1) - bc(x0,1) = x1-x0
+# If we get the inverse value from this, we get: x1-x0 +1
+# the difference is then translated by 1
+
+CV <- function(V) return(sd(V, na.rm=TRUE)/mean(V, na.rm=TRUE))
+
+```
+
+
+
+# SI definition
+
+We use here the final proposed SI:
+
+Let’s consider $s_i>0$ and $u_i>0$ to be the stimulated and unstimulated values for a given sample i. We will consider the stimulation index (SI) to be the version with correction:
+
+\begin{equation}
+  {{SI}_i=g}_{\lambda}\left(s_i,u_i\right) =
+    \begin{cases}
+      \left(s_i^\lambda-u_i^\lambda+1-\theta(\lambda) \right)^\frac{1}{\lambda} &, 0 \le \lambda \leq 1 \\
+      \  \  \  \  \ \cfrac{s_i}{u_i} &, \lambda = 0.
+    \end{cases}       
+\end{equation}
+
+Where:
+\begin{equation}
+  \theta(\lambda) =
+    \begin{cases}
+      1-(1-\lambda)^{\frac{\lambda}{1-\lambda}} &, \lambda < 0.5  \\
+      \lambda^{\frac{1-\lambda}{\lambda}} &,  \lambda \geq 0.5  \\
+    \end{cases}       
+\end{equation}
+
+
+
+```{r}
+
+SI <- function(x1,x0,L=0.5,H=NULL, s=1, e=0,OOB.V=1E-3, corrected=FALSE){
+ 
+  # The function can be applied to vectors or matrix
+  # x0 is unstim
+  # x1 is stim
+  
+  # L is lambda
+  # H is  Theta for correcting of the translation issue
+  # You can set H as you wish, e.g set to 0 for small lambda and set to 1 for lambda close to 1
+  # corrected =TRUE set a H value by default, which is F1(L) (see below)
+ 
+  # setting H cancels the "corrected" option
+  
+  # OOB.V can be set to a low value, such as 1E-3
+  # It can also be set to NaN or NA
+  # This is the value returned when the SI is not defined; due to unstim >> stim
+  
+  # e and s are scaling factors. By default: no scaling
+  
+  
+  F1 <- function(L){
+    # S shaped function for the correction
+    # returns 1 when L=1, 0 when L=0, 0.5 when L=0.5
+    # with and S shape to get quick convergence to 0 and 1
+    
+    sign0 <- function(v){
+      sg <- sign(v)
+      sg[s==0] <- 1
+      return(sg)
+    } 
+    
+    L0 <- abs(L-0.5)+0.5
+    f1 <- L0^((1-L0)/L0)
+    
+    f1 <- sign0(L-0.5)*f1 +(-sign0(L-0.5) +1)/2
+    
+    return(f1)
+  }
+  
+  
+  d <- dim(x1)  # will be NULL if single value or vector, else will be nrow, ncol
+  if(!is.null(d)) if(sum(dim(x0) != d)>0) stop("x0 and x1 not the same dimension\n")
+  
+  #scaling
+  x1 <- unlist((x1-e)/s)
+  x0 <- unlist((x0-e)/s)
+  if(length(x0) != length(x1)) stop("x0 and x1 not the same length\n")
+  
+  if(!is.null(H) & corrected){ corrected <- FALSE; warning("corrected set to FALSE\n")}
+
+  if(corrected){
+    H <- F1(L)
+  }
+  if(is.null(H)) H <- 0
+  
+  res <- NA*x1
+  if(L>0 & L<=1){
+    OOB <- which((x1^L+1-H)^(1/L) < x0 )   # out of bound (exclude NAs)
+    N.OOB <- which((x1^L+1-H)^(1/L) >= x0 )   # not out of bound (exclude NAs)
+    res[N.OOB] <- (x1[N.OOB]^L-x0[N.OOB]^L+1-H)^(1/L)
+    res[OOB] <- OOB.V
+  }
+  if(L==0) res <- x1/x0
+  
+  dim(res) <- d
+  return(res)
+}
+
+
+```
+
+
+
+ 
+# test on dataset
+
+We are using here the dataset including repeats from different centers. "ring testing"
+
+In this version, we use correction=FALSE, to get the original SI, that is $\theta =0$ .
+
+
+
+```{r}
+load(file = "../Stim_Unstim_20230417/Processed_data_20230526.Rdata")
+Param = names(DAT_CMV.o)[5:14]
+Param <- Param[-c(1,2,7)]
+Param2 <- Param
+Param2 <- gsub("p", "+", Param2, fixed = TRUE)
+Param2 <- gsub("_", " ", Param2, fixed = TRUE)
+Param2 <- gsub("CD107a", "CD107a+", Param2, fixed = TRUE)
+Param2 <- gsub("++", "+", Param2, fixed = TRUE)
+
+colsite <- c("gray50", "purple", "orange")[as.numeric(as.factor(DAT_CMV.o.all$Site))]
+Leg1 <- unique(data.frame(Site=DAT_CMV.o.all$Site, col=colsite))
+
+Leg1
+
+epsilon <- 1E-3
+LL <- seq(0,1,0.01)
+
+
+
+```
+
+
+We will use mixed models and the ratio of variances to evaluate effects of transformation. The ratio of between sample variance to total variance is equivalent to ICC2.
+
+The ratio illustrated in plots were originaly:
+
+black: subj/total
+red: Site/Total
+orange: Experiment/Total
+blue: Error /Total
+
+But here we use only Subj/total, in green.
+
+
+```{r}
+plot.su <- function(MyPar){
+  plot(DAT_Unstim.o.all[[Param[MyPar]]],DAT_CMV.o.all[[Param[MyPar]]],
+     col=colsite,
+     xlab="unstim", ylab="CMV", main=Param2[MyPar])
+}
+```
+
+
+```{r}
+plot.su.log <- function(MyPar){
+  plot(log2(DAT_Unstim.o.all[[Param[MyPar]]]+epsilon),log2(DAT_CMV.o.all[[Param[MyPar]]]+epsilon),
+     col=colsite,
+     xlab="unstim (log2)", ylab="CMV (log2)", main=Param2[MyPar])
+}
+```
+
+
+```{r}
+getstats1 <- function(MyPar){
+
+wnana <- which( is.na(DAT_CMV.o.all[[Param[MyPar]]]) | is.na(DAT_Unstim.o.all[[Param[MyPar]]]))
+
+DAT2 <- data.frame(value=DAT_CMV.o.all[[Param[MyPar]]] +epsilon, Subj=DAT_CMV.o.all$SampleID, Site=DAT_CMV.o.all$Site, Exp=paste0(DAT_CMV.o.all$Site,DAT_CMV.o.all$Experiment))
+DAT2$value[wnana] <- NA
+
+LM2 <- lmer(value~(1|Site) + (1|Exp)+ (1|Subj), data=DAT2)
+
+print(summary(LM2)) # print the variances
+
+# variance components
+VSite <- VarCorr(LM2)$Site[1,1]
+VExp <- VarCorr(LM2)$Exp[1,1]
+VSubj <- VarCorr(LM2)$Subj[1,1]
+V_Error <- attributes(VarCorr(LM2))$sc^2
+
+CV1 <- median(aggregate(DAT2$value,by=list(DAT2$Subj), CV)$x)
+return(data.frame(LL=NA,VSite,VExp,VSubj,V_Error, V_total=NA,Median.CV=CV1))
+}
+```
+
+
+
+```{r}
+getstats1.log <- function(MyPar){
+
+wnana <- which( is.na(DAT_CMV.o.all[[Param[MyPar]]]) | is.na(DAT_Unstim.o.all[[Param[MyPar]]]))
+
+DAT2 <- data.frame(value=DAT_CMV.o.all[[Param[MyPar]]] +epsilon, Subj=DAT_CMV.o.all$SampleID, Site=DAT_CMV.o.all$Site, Exp=paste0(DAT_CMV.o.all$Site,DAT_CMV.o.all$Experiment))
+DAT2$value[wnana] <- NA
+
+LM2 <- lmer(log2(value+epsilon)~(1|Site) + (1|Exp)+ (1|Subj), data=DAT2)
+
+print(summary(LM2)) # print the variances
+
+# variance components
+VSite <- VarCorr(LM2)$Site[1,1]
+VExp <- VarCorr(LM2)$Exp[1,1]
+VSubj <- VarCorr(LM2)$Subj[1,1]
+V_Error <- attributes(VarCorr(LM2))$sc^2
+
+CV1 <- median(aggregate(DAT2$value,by=list(DAT2$Subj), CV)$x)
+return(data.frame(LL=NA,VSite,VExp,VSubj,V_Error, V_total=NA,Median.CV=CV1))
+}
+```
+
+
+```{r}
+
+getstats.L <- function(MyPar, RES1){
+MyVar <- data.frame(LL)
+MyVar$VSite=NA
+MyVar$VExp=NA
+MyVar$VSubj=NA
+MyVar$V_Error = NA
+MyVar$V_total = NA
+MyVar$Median.CV <- NA
+
+MyVar <- rbind(MyVar, RES1)
+
+wnana <- which( is.na(DAT_CMV.o.all[[Param[MyPar]]]) | is.na(DAT_Unstim.o.all[[Param[MyPar]]]))
+
+
+for(k in 1:length(LL)){
+
+DAT2 <- data.frame(value=SI(DAT_CMV.o.all[[Param[MyPar]]]+epsilon,DAT_Unstim.o.all[[Param[MyPar]]]+epsilon, LL[k]), Subj=DAT_CMV.o.all$SampleID, Site=DAT_CMV.o.all$Site, Exp=paste0(DAT_CMV.o.all$Site,DAT_CMV.o.all$Experiment))
+DAT2$value[wnana] <- NA
+
+LM2 <- lmer(value~(1|Site) + (1|Exp)+ (1|Subj), data=DAT2)
+
+#summary(LM2) # get the variances
+#if(LL[k]==0.5) Mod.0.5 <- LM2
+
+# variance components
+MyVar$VSite[k] <- VarCorr(LM2)$Site[1,1]
+MyVar$VExp[k]  <- VarCorr(LM2)$Exp[1,1]
+MyVar$VSubj[k]  <- VarCorr(LM2)$Subj[1,1]
+MyVar$V_Error[k]  <- attributes(VarCorr(LM2))$sc^2
+
+MyVar$Median.CV[k] <- mean(aggregate(DAT2$value,by=list(DAT2$Subj), CV)$x)
+}
+
+MyVar$V_total <- with(MyVar,VSite +  VExp + VSubj + V_Error)
+MyVar$Ratio.Subj <- with(MyVar,VSubj/V_total)
+MyVar$Ratio.Site <- with(MyVar,VSite/V_total)
+MyVar$Ratio.Exp <- with(MyVar,VExp/V_total)
+MyVar$Ratio.Error <- with(MyVar,V_Error/V_total)
+
+return(MyVar)
+}
+
+```
+
+
+
+```{r}
+
+getstats.L.log <- function(MyPar, RES1){
+MyVar <- data.frame(LL)
+MyVar$VSite=NA
+MyVar$VExp=NA
+MyVar$VSubj=NA
+MyVar$V_Error = NA
+MyVar$V_total = NA
+MyVar$Median.CV <- NA
+
+MyVar <- rbind(MyVar, RES1)
+
+wnana <- which( is.na(DAT_CMV.o.all[[Param[MyPar]]]) | is.na(DAT_Unstim.o.all[[Param[MyPar]]]))
+
+
+for(k in 1:length(LL)){
+
+DAT2 <- data.frame(value=SI(DAT_CMV.o.all[[Param[MyPar]]]+epsilon,DAT_Unstim.o.all[[Param[MyPar]]]+epsilon, LL[k]), Subj=DAT_CMV.o.all$SampleID, Site=DAT_CMV.o.all$Site, Exp=paste0(DAT_CMV.o.all$Site,DAT_CMV.o.all$Experiment))
+DAT2$value[wnana] <- NA
+
+LM2 <- lmer(log2(value+epsilon)~(1|Site) + (1|Exp)+ (1|Subj), data=DAT2)
+
+#summary(LM2) # get the variances
+#if(LL[k]==0.5) Mod.0.5 <- LM2
+
+# variance components
+MyVar$VSite[k] <- VarCorr(LM2)$Site[1,1]
+MyVar$VExp[k]  <- VarCorr(LM2)$Exp[1,1]
+MyVar$VSubj[k]  <- VarCorr(LM2)$Subj[1,1]
+MyVar$V_Error[k]  <- attributes(VarCorr(LM2))$sc^2
+
+MyVar$Median.CV[k] <- mean(aggregate(DAT2$value,by=list(DAT2$Subj), CV)$x)
+}
+
+MyVar$V_total <- with(MyVar,VSite +  VExp + VSubj + V_Error)
+MyVar$Ratio.Subj <- with(MyVar,VSubj/V_total)
+MyVar$Ratio.Site <- with(MyVar,VSite/V_total)
+MyVar$Ratio.Exp <- with(MyVar,VExp/V_total)
+MyVar$Ratio.Error <- with(MyVar,V_Error/V_total)
+
+return(MyVar)
+}
+
+```
+
+
+
+```{r}
+plot.LL <- function(MyPar,MyVar){
+plot(MyVar$LL, MyVar$Ratio.Subj, type="l", 
+     ylim=c(0,1), xlab=expression(lambda),ylab="Variance Ratio (Donor/Total)",
+     main=Param2[MyPar], las=1, col="darkgreen")
+#lines(MyVar$LL,MyVar$Ratio.Site,col="red")
+#lines(MyVar$LL,MyVar$Ratio.Exp,col="orange")
+#lines(MyVar$LL,MyVar$Ratio.Error,col="blue")
+
+wraw <- which(is.na(MyVar$LL))
+abline(h=MyVar$Ratio.Subj[wraw], col="gray50", lty=2)
+#abline(h=MyVar$Ratio.Site[wraw], col="pink", lty=2)
+#abline(h=MyVar$Ratio.Exp[wraw], col="goldenrod1", lty=2)
+#abline(h=MyVar$Ratio.Error[wraw],col="skyblue", lty=2)
+
+abline(v=LL[which.max(MyVar$Ratio.Subj[-wraw])])
+}
+```
+```{r}
+plot.CV <-  function(MyPar,MyVar){
+plot(MyVar$LL, MyVar$Median.CV, type="l", 
+     ylim=c(0,1), xlab=expression(lambda),ylab="Median CV",
+     main=Param2[MyPar], las=1, family="Arial1")
+}
+
+```
+
+
+# Evaluation on original scale
+
+```{r}
+MyPar <- 1
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r}
+plot.CV(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+
+
+
+```{r}
+MyPar <- 2
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r}
+plot.CV(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+
+
+```{r}
+MyPar <- 3
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r}
+plot.CV(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+
+```{r}
+MyPar <- 4
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r}
+plot.CV(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+```{r}
+MyPar <- 5
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r}
+plot.CV(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+
+```{r}
+MyPar <- 6
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r}
+plot.CV(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+
+
+```{r}
+MyPar <- 7
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r}
+plot.CV(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+```{r, eval=FALSE}
+Y1 <- matrix(DAT2$value[1:18],6,3,byrow=TRUE)
+Y2 <- matrix(DAT2$value[19:36],6,3,byrow=TRUE)
+Y3 <- matrix(DAT2$value[37:54],6,3,byrow=TRUE)
+Y <- cbind(Y1,Y2,Y3)
+```
+
+
+# Evaluation on the Log scale
+
+
+
+```{r}
+MyPar <- 1
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su.log(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1.log(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L.log(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+
+
+```{r}
+MyPar <- 2
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su.log(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1.log(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L.log(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+
+
+```{r}
+MyPar <- 3
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su.log(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1.log(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L.log(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+
+
+```{r}
+MyPar <- 4
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su.log(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1.log(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L.log(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+
+```{r}
+MyPar <- 5
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su.log(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1.log(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L.log(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+
+
+```{r}
+MyPar <- 6
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su.log(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1.log(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L.log(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
+
+```{r}
+MyPar <- 7
+```
+
+## `r Param2[MyPar]`
+
+Lets consider `r Param2[MyPar]`.
+
+If we plot the CMV vs unstim, colored by sites, we get:
+
+```{r}
+plot.su.log(MyPar)
+```
+
+
+
+We can see the correlation between unstim and stim, and the strata from sites.
+
+In a mixed model of the stim data:
+
+```{r}
+RES1 <- getstats1.log(MyPar)
+```
+
+
+We can see the variance for sites, vs donors (Subj), experiments and error.
+
+
+Then, if we correct the stim by unstim, varying $\lambda$:
+
+```{r, include=FALSE}
+RES2 <- getstats.L.log(MyPar, RES1)
+```
+
+```{r}
+plot.LL(MyPar,RES2)
+```
+
+```{r, include =FALSE}
+pdf(file=paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".pdf"), width=Width1, height=height1)
+par(mar=c(4,4,2,2))
+plot.LL(MyPar,RES2)
+dev.off()
+write.xlsx(RES2,paste0("Boxcox_ICC_log_", Param[MyPar], "_original_", dateOut, ".xlsx"))
+```
+
+
+
